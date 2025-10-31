@@ -1,135 +1,140 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, jsonify, Response
 from pymongo import MongoClient
 
-# ---------------- MongoDB connection ----------------
+app = Flask(__name__)
+
+# --- MongoDB Connection ---
 MONGO_URL = "mongodb+srv://farooqi_db_user_:khaja2007@controller-project.9hcro8q.mongodb.net/?appName=controller-project"
 client = MongoClient(MONGO_URL)
 db = client["controller_project"]
 collection = db["ac_status"]
 
-# ---------------- Flask setup ----------------
-app = Flask(__name__)
+# --- Initialize if empty ---
+if collection.count_documents({}) == 0:
+    collection.insert_one({"status": "OFF", "temperature": 24})
 
-# ---------------- HTML interface ----------------
-HTML_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>🌬️ Smart AC Controller</title>
-    <style>
-        body {
-            font-family: Arial;
-            text-align: center;
-            background: linear-gradient(135deg, #3a7bd5, #00d2ff);
-            color: white;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-        }
-        h1 { font-size: 36px; margin-bottom: 40px; }
-        button {
-            padding: 15px 35px;
-            font-size: 20px;
-            margin: 10px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            color: white;
-        }
-        .on { background-color: #28a745; }
-        .off { background-color: #dc3545; }
-        .temp-up { background-color: #007bff; }
-        .temp-down { background-color: #ff9800; }
-        .status {
-            margin-top: 30px;
-            font-size: 22px;
-        }
-    </style>
-</head>
-<body>
-    <h1>🌬️ Smart AC Controller</h1>
-
-    <div>
-        <button class="on" onclick="controlAC('ON')">Turn ON</button>
-        <button class="off" onclick="controlAC('OFF')">Turn OFF</button>
-    </div>
-
-    <div>
-        <button class="temp-down" onclick="changeTemp('decrease')">- Temp</button>
-        <button class="temp-up" onclick="changeTemp('increase')">+ Temp</button>
-    </div>
-
-    <div class="status">
-        Current Status: <span id="statusText">Loading...</span><br>
-        Current Temperature: <span id="tempText">--</span>°C
-    </div>
-
-    <script>
-        function controlAC(state) {
-            fetch('/update', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: 'state=' + state
-            }).then(() => refreshStatus());
-        }
-
-        function changeTemp(action) {
-            fetch('/temp', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: 'action=' + action
-            }).then(() => refreshStatus());
-        }
-
-        function refreshStatus() {
-            fetch('/status').then(res => res.json())
-            .then(data => {
-                document.getElementById('statusText').innerText = data.state;
-                document.getElementById('tempText').innerText = data.temperature;
-            });
-        }
-
-        // Load initial data
-        refreshStatus();
-        setInterval(refreshStatus, 3000);
-    </script>
-</body>
-</html>
-"""
-
-# ---------------- Flask Routes ----------------
+# --- Serve Web UI directly from this file ---
 @app.route('/')
 def home():
-    return render_template_string(HTML_PAGE)
+    html = '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Smart AC Controller</title>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          background: linear-gradient(135deg, #eef2f3, #8e9eab);
+          text-align: center;
+          padding-top: 70px;
+        }
+        .card {
+          background: white;
+          padding: 40px;
+          border-radius: 16px;
+          display: inline-block;
+          box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        button {
+          padding: 12px 30px;
+          font-size: 16px;
+          border: none;
+          border-radius: 8px;
+          cursor: pointer;
+          margin: 10px;
+          transition: 0.3s;
+        }
+        .on { background: #4CAF50; color: white; }
+        .off { background: #f44336; color: white; }
+        select {
+          padding: 10px;
+          font-size: 16px;
+          border-radius: 6px;
+          border: 1px solid #ccc;
+        }
+        h2 { color: #333; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h2>🌬 Smart AC Controller</h2>
+        <p><strong>Status:</strong> <span id="status">--</span></p>
+        <button id="toggleBtn" class="on">Loading...</button>
+        <br><br>
+        <label><strong>Temperature:</strong></label><br>
+        <select id="tempSelect"></select>
+        <br><br>
+        <button id="saveBtn">Set Temperature</button>
+      </div>
 
+      <script>
+        const statusEl = document.getElementById('status');
+        const toggleBtn = document.getElementById('toggleBtn');
+        const tempSelect = document.getElementById('tempSelect');
+        const saveBtn = document.getElementById('saveBtn');
+
+        // Fill dropdown 16–26
+        for (let t = 16; t <= 26; t++) {
+          const opt = document.createElement('option');
+          opt.value = t;
+          opt.textContent = t + "°C";
+          tempSelect.appendChild(opt);
+        }
+
+        // Fetch data
+        async function fetchData() {
+          const res = await fetch('/fetch');
+          const data = await res.json();
+          statusEl.textContent = data.status;
+          tempSelect.value = data.temperature;
+          toggleBtn.textContent = data.status === "ON" ? "Turn OFF" : "Turn ON";
+          toggleBtn.className = data.status === "ON" ? "off" : "on";
+        }
+
+        // Toggle ON/OFF
+        toggleBtn.addEventListener('click', async () => {
+          const newStatus = statusEl.textContent === "ON" ? "OFF" : "ON";
+          await updateData(newStatus, parseInt(tempSelect.value));
+        });
+
+        // Set Temperature
+        saveBtn.addEventListener('click', async () => {
+          await updateData(statusEl.textContent, parseInt(tempSelect.value));
+        });
+
+        // Update MongoDB
+        async function updateData(status, temperature) {
+          await fetch('/update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({status, temperature})
+          });
+          fetchData();
+        }
+
+        setInterval(fetchData, 2000);
+        fetchData();
+      </script>
+    </body>
+    </html>
+    '''
+    return Response(html, mimetype='text/html')
+
+# --- Fetch Current Data ---
+@app.route('/fetch', methods=['GET'])
+def fetch():
+    data = collection.find_one()
+    return jsonify({"status": data["status"], "temperature": data["temperature"]})
+
+# --- Update Data ---
 @app.route('/update', methods=['POST'])
-def update_state():
-    state = request.form.get('state', 'OFF')
-    doc = collection.find_one() or {}
-    temperature = doc.get('temperature', 24)
-    collection.update_one({}, {'$set': {'state': state, 'temperature': temperature}}, upsert=True)
-    return "OK"
+def update():
+    data = request.get_json()
+    collection.update_one({}, {"$set": {
+        "status": data["status"],
+        "temperature": int(data["temperature"])
+    }})
+    return jsonify({"ok": True})
 
-@app.route('/temp', methods=['POST'])
-def update_temperature():
-    action = request.form.get('action')
-    doc = collection.find_one() or {'temperature': 24, 'state': 'OFF'}
-    temp = doc.get('temperature', 24)
-
-    if action == 'increase' and temp < 24:
-        temp += 1
-    elif action == 'decrease' and temp > 16:
-        temp -= 1
-
-    collection.update_one({}, {'$set': {'temperature': temp}}, upsert=True)
-    return "OK"
-
-@app.route('/status')
-def get_status():
-    data = collection.find_one() or {'state': 'OFF', 'temperature': 24}
-    return data
-
-# ---------------- Run Flask Server ----------------
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
