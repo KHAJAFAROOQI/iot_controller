@@ -1,3 +1,5 @@
+import os
+import lirc
 from flask import Flask, request, jsonify, Response
 from pymongo import MongoClient
 
@@ -9,11 +11,15 @@ client = MongoClient(MONGO_URL)
 db = client["controller_project"]
 collection = db["ac_status"]
 
-# --- Initialize if empty ---
+# --- Initialize LIRC ---
+sock_id = lirc.init("ac_remote")
+
+# --- Initialize Mongo if empty ---
 if collection.count_documents({}) == 0:
     collection.insert_one({"status": "OFF", "temperature": 24})
 
-# --- Serve Web UI directly from this file ---
+
+# --- Serve Web UI directly ---
 @app.route('/')
 def home():
     html = '''
@@ -81,7 +87,6 @@ def home():
           tempSelect.appendChild(opt);
         }
 
-        // Fetch data
         async function fetchData() {
           const res = await fetch('/fetch');
           const data = await res.json();
@@ -91,18 +96,15 @@ def home():
           toggleBtn.className = data.status === "ON" ? "off" : "on";
         }
 
-        // Toggle ON/OFF
         toggleBtn.addEventListener('click', async () => {
           const newStatus = statusEl.textContent === "ON" ? "OFF" : "ON";
           await updateData(newStatus, parseInt(tempSelect.value));
         });
 
-        // Set Temperature
         saveBtn.addEventListener('click', async () => {
           await updateData(statusEl.textContent, parseInt(tempSelect.value));
         });
 
-        // Update MongoDB
         async function updateData(status, temperature) {
           await fetch('/update', {
             method: 'POST',
@@ -120,21 +122,43 @@ def home():
     '''
     return Response(html, mimetype='text/html')
 
+
 # --- Fetch Current Data ---
 @app.route('/fetch', methods=['GET'])
 def fetch():
     data = collection.find_one()
     return jsonify({"status": data["status"], "temperature": data["temperature"]})
 
-# --- Update Data ---
+
+# --- Update Data and send IR commands ---
 @app.route('/update', methods=['POST'])
 def update():
     data = request.get_json()
-    collection.update_one({}, {"$set": {
-        "status": data["status"],
-        "temperature": int(data["temperature"])
-    }})
-    return jsonify({"ok": True})
+    status = data["status"].upper()
+    temp = int(data["temperature"])
+
+    # Update DB
+    collection.update_one({}, {"$set": {"status": status, "temperature": temp}})
+
+    # --- Send IR Commands through LIRC ---
+    try:
+        if status == "ON":
+            lirc.send_once("ac_remote", "POWER_ON")
+        else:
+            lirc.send_once("ac_remote", "POWER_OFF")
+
+        # Send temperature IR code (like TEMP_16 ... TEMP_26)
+        if 16 <= temp <= 26:
+            cmd = f"TEMP_{temp}"
+            lirc.send_once("ac_remote", cmd)
+
+        print(f"Sent IR: {status} | Temperature: {temp}°C")
+
+    except Exception as e:
+        print("LIRC Error:", e)
+
+    return jsonify({"ok": True, "status": status, "temperature": temp})
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
